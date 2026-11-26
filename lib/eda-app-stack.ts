@@ -10,7 +10,7 @@ import * as subs from "aws-cdk-lib/aws-sns-subscriptions";
 import * as iam from "aws-cdk-lib/aws-iam";
 
 import { Construct } from "constructs";
-// import * as sqs from 'aws-cdk-lib/aws-sqs';
+
 
 export class EDAAppStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -25,6 +25,10 @@ export class EDAAppStack extends cdk.Stack {
     // Integration infrastructure
 
     const imageProcessQueue = new sqs.Queue(this, "img-process-q", {
+      receiveMessageWaitTime: cdk.Duration.seconds(6),
+    });
+
+    const mailerQ = new sqs.Queue(this, "mailer-q", {
       receiveMessageWaitTime: cdk.Duration.seconds(6),
     });
 
@@ -45,6 +49,13 @@ export class EDAAppStack extends cdk.Stack {
       }
     );
 
+    const mailerFn = new lambdanode.NodejsFunction(this, "mailer", {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 1024,
+      timeout: cdk.Duration.seconds(3),
+      entry: `${__dirname}/../lambdas/mailer.ts`,
+    });
+
     // S3 to SNS
     imagesBucket.addEventNotification(
       s3.EventType.OBJECT_CREATED,
@@ -56,6 +67,8 @@ export class EDAAppStack extends cdk.Stack {
       new subs.SqsSubscription(imageProcessQueue)
     );
 
+    newImageTopic.addSubscription(new subs.SqsSubscription(mailerQ));
+
     // SQS to Lambda
     const newImageEventSource = new events.SqsEventSource(imageProcessQueue, {
       batchSize: 5,
@@ -64,9 +77,28 @@ export class EDAAppStack extends cdk.Stack {
 
     processImageFn.addEventSource(newImageEventSource);
 
+    const newImageMailEventSource = new events.SqsEventSource(mailerQ, {
+      batchSize: 5,
+      maxBatchingWindow: cdk.Duration.seconds(5),
+    });
+
+    mailerFn.addEventSource(newImageMailEventSource);
+
     // Permissions
 
     imagesBucket.grantRead(processImageFn);
+
+    mailerFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "ses:SendEmail",
+          "ses:SendRawEmail",
+          "ses:SendTemplatedEmail",
+        ],
+        resources: ["*"],
+      })
+    );
 
     // Output
 
