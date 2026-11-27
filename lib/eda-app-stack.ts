@@ -97,10 +97,40 @@ export class EDAAppStack extends cdk.Stack {
 
     // SNS to SQS
     newImageTopic.addSubscription(
-      new subs.SqsSubscription(imageProcessQueue)
+      new subs.SqsSubscription(imageProcessQueue, {
+        filterPolicyWithMessageBody: {
+          Records: sns.FilterOrPolicy.policy({
+            s3: sns.FilterOrPolicy.policy({
+              object: sns.FilterOrPolicy.policy({
+                key: sns.FilterOrPolicy.filter(
+                  sns.SubscriptionFilter.stringFilter({
+                    matchSuffixes: [".jpeg", ".jpg", ".png"],
+                  })
+                ),
+              }),
+            }),
+          }),
+        },
+      })
     );
 
-    newImageTopic.addSubscription(new subs.SqsSubscription(mailerQ));
+    newImageTopic.addSubscription(
+      new subs.SqsSubscription(mailerQ, {
+        filterPolicyWithMessageBody: {
+          Records: sns.FilterOrPolicy.policy({
+            s3: sns.FilterOrPolicy.policy({
+              object: sns.FilterOrPolicy.policy({
+                key: sns.FilterOrPolicy.filter(
+                  sns.SubscriptionFilter.stringFilter({
+                    matchSuffixes: [".jpeg", ".jpg", ".png"],
+                  })
+                ),
+              }),
+            }),
+          }),
+        },
+      })
+    );
 
     // SQS to Lambda
     const newImageEventSource = new events.SqsEventSource(imageProcessQueue, {
@@ -142,10 +172,40 @@ export class EDAAppStack extends cdk.Stack {
       })
     );
 
+    const addMetadataFn = new lambdanode.NodejsFunction(
+      this,
+      "addMetadataFn",
+      {
+        runtime: lambda.Runtime.NODEJS_22_X,
+        entry: `${__dirname}/../lambdas/addImageMetadata.ts`,
+        timeout: cdk.Duration.seconds(15),
+        memorySize: 128,
+        environment: {
+          TABLE_NAME: imagesTable.tableName,
+        },
+      }
+    );
+
+    imagesTable.grantReadWriteData(addMetadataFn);
+
+    newImageTopic.addSubscription(
+      new subs.LambdaSubscription(addMetadataFn, {
+        filterPolicy: {
+          metadata_type: sns.SubscriptionFilter.stringFilter({
+            allowlist: ["Caption", "Date", "Photographer"],
+          }),
+        },
+      })
+    );
+
     // Output
 
     new cdk.CfnOutput(this, "bucketName", {
       value: imagesBucket.bucketName,
+    });
+
+    new cdk.CfnOutput(this, "SNS Topic ARN", {
+      value: newImageTopic.topicArn,
     });
   }
 }
